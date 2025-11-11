@@ -6,9 +6,48 @@
 #define MAX_LINE_LENGTH 100
 #define MAX_VARS 4 
 
+
+
 typedef struct {
-    Stack* stack;           // Стек для операндов
-    Stack* return_stack;    // Стек для адресов возврата
+    int tag;       // метка типа
+    int value;     // значение
+} VMValue;
+
+enum { VT_INT = 0x11AA55CC, VT_RET = 0x22BB66DD };
+
+static inline bool is_int_token(Data d) {
+    if (d == 0) return false;
+    return ((VMValue*)(void*)d)->tag == VT_INT;
+}
+static inline bool is_return_token(Data d) {
+    if (d == 0) return false;
+    return ((VMValue*)(void*)d)->tag == VT_RET;
+}
+static inline int get_int(Data d) {
+    return ((VMValue*)(void*)d)->value;
+}
+static inline int get_ret(Data d) {
+    return ((VMValue*)(void*)d)->value;
+}
+static inline Data make_int(int x) {
+    VMValue* v = (VMValue*)malloc(sizeof(VMValue));
+    if (!v) return (Data)0;
+    v->tag = VT_INT;
+    v->value = x;
+    return (Data)(uintptr_t)v;
+}
+static inline Data make_ret(int addr) {
+    VMValue* v = (VMValue*)malloc(sizeof(VMValue));
+    if (!v) return (Data)0;
+    v->tag = VT_RET;
+    v->value = addr;
+    return (Data)(uintptr_t)v;
+}
+
+
+
+typedef struct {
+    Stack* stack;           // Стек для операндов и адресов возврата 
     int vars[MAX_VARS];     // Локальные переменные 
     int function_calls;     // Счетчик 
 } JavaMachine;
@@ -29,14 +68,6 @@ JavaMachine* java_machine_create(void) {
         return NULL;
     }
     
-    // Создание стека для адресов возврата
-    machine->return_stack = stack_create(NULL);
-    if (machine->return_stack == NULL) {
-        stack_delete(machine->stack);
-        free(machine);  
-        return NULL;
-    }
-    
     // Инициализация
     for (int i = 0; i < MAX_VARS; i++) {
         machine->vars[i] = 0;
@@ -53,8 +84,13 @@ void java_machine_delete(JavaMachine* machine) {
         return;  
     }
 
+    // Очистка элементов стека
+    while (!stack_empty(machine->stack)) {
+        Data d = stack_get(machine->stack);
+        stack_pop(machine->stack);
+        if (d) free((void*)(uintptr_t)d);
+    }
     stack_delete(machine->stack);
-    stack_delete(machine->return_stack);
     free(machine);
 }
 
@@ -65,7 +101,14 @@ void handle_bipush(JavaMachine* machine, int value) {
         return;  
     }
     
-    stack_push(machine->stack, (Data)value);
+    {
+        Data d = make_int(value);
+        if (d == 0) {
+            printf("Error: cannot allocate int value\n");
+            return;
+        }
+        stack_push(machine->stack, d);
+    }
     
     machine->function_calls++;
 
@@ -106,7 +149,12 @@ void handle_iadd(JavaMachine* machine) {
     }
     
     Data b = stack_get(machine->stack);
+    if (is_return_token(b)) {
+        printf("Error: iadd with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ib = is_int_token(b) ? get_int(b) : (int)b;
     
     // Проверяем, что после извлечения первого элемента стек не пустой
     if (stack_empty(machine->stack)) {
@@ -117,10 +165,18 @@ void handle_iadd(JavaMachine* machine) {
     }
     
     Data a = stack_get(machine->stack);
+    if (is_return_token(a)) {
+        // Возвращаем b обратно в стек
+        stack_push(machine->stack, make_int(ib));
+        printf("Error: iadd with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ia = is_int_token(a) ? get_int(a) : (int)a;
     
     // Складываем и кладем результат в стек
-    Data result = a + b;
+    Data result = make_int(ia + ib);
+    if (result == 0) { printf("Error: cannot allocate int value\n"); return; }
     stack_push(machine->stack, result);
     
     machine->function_calls++;
@@ -141,7 +197,12 @@ void handle_isub(JavaMachine* machine) {
     }
     
     Data b = stack_get(machine->stack);
+    if (is_return_token(b)) {
+        printf("Error: isub with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ib = is_int_token(b) ? get_int(b) : (int)b;
     
     // Проверяем, что после извлечения первого элемента стек не пустой
     if (stack_empty(machine->stack)) {
@@ -152,10 +213,17 @@ void handle_isub(JavaMachine* machine) {
     }
     
     Data a = stack_get(machine->stack);
+    if (is_return_token(a)) {
+        stack_push(machine->stack, make_int(ib));
+        printf("Error: isub with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ia = is_int_token(a) ? get_int(a) : (int)a;
     
 
-    Data result = a - b;
+    Data result = make_int(ia - ib);
+    if (!result) { printf("Error: cannot allocate int value\n"); return; }
     stack_push(machine->stack, result);
   
     machine->function_calls++;
@@ -177,7 +245,12 @@ void handle_imul(JavaMachine* machine) {
     }
     
     Data b = stack_get(machine->stack);
+    if (is_return_token(b)) {
+        printf("Error: imul with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ib = is_int_token(b) ? get_int(b) : (int)b;
     
     // Проверяем, что после извлечения первого элемента стек не пустой
     if (stack_empty(machine->stack)) {
@@ -188,9 +261,16 @@ void handle_imul(JavaMachine* machine) {
     }
 
     Data a = stack_get(machine->stack);
+    if (is_return_token(a)) {
+        stack_push(machine->stack, make_int(ib));
+        printf("Error: imul with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ia = is_int_token(a) ? get_int(a) : (int)a;
     
-    Data result = a * b;
+    Data result = make_int(ia * ib);
+    if (!result) { printf("Error: cannot allocate int value\n"); return; }
     stack_push(machine->stack, result);
     
     machine->function_calls++;
@@ -212,7 +292,12 @@ void handle_iand(JavaMachine* machine) {
     }
     
     Data b = stack_get(machine->stack);
+    if (is_return_token(b)) {
+        printf("Error: iand with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ib = is_int_token(b) ? get_int(b) : (int)b;
     
     // Проверяем, что после извлечения первого элемента стек не пустой
     if (stack_empty(machine->stack)) {
@@ -223,10 +308,17 @@ void handle_iand(JavaMachine* machine) {
     }
     
     Data a = stack_get(machine->stack);
+    if (is_return_token(a)) {
+        stack_push(machine->stack, make_int(ib));
+        printf("Error: iand with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ia = is_int_token(a) ? get_int(a) : (int)a;
     
    
-    Data result = a & b;
+    Data result = make_int(ia & ib);
+    if (!result) { printf("Error: cannot allocate int value\n"); return; }
     stack_push(machine->stack, result);
     
     machine->function_calls++;
@@ -248,7 +340,12 @@ void handle_ior(JavaMachine* machine) {
     }
     
     Data b = stack_get(machine->stack);
+    if (is_return_token(b)) {
+        printf("Error: ior with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ib = is_int_token(b) ? get_int(b) : (int)b;
     
     // Проверяем, что после извлечения первого элемента стек не пустой
     if (stack_empty(machine->stack)) {
@@ -259,10 +356,17 @@ void handle_ior(JavaMachine* machine) {
     }
     
     Data a = stack_get(machine->stack);
+    if (is_return_token(a)) {
+        stack_push(machine->stack, make_int(ib));
+        printf("Error: ior with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ia = is_int_token(a) ? get_int(a) : (int)a;
     
     // побитовое ИЛИ
-    Data result = a | b;
+    Data result = make_int(ia | ib);
+    if (!result) { printf("Error: cannot allocate int value\n"); return; }
     stack_push(machine->stack, result);
     
     machine->function_calls++;
@@ -284,7 +388,12 @@ void handle_ixor(JavaMachine* machine) {
     }
     
     Data b = stack_get(machine->stack);
+    if (is_return_token(b)) {
+        printf("Error: ixor with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ib = is_int_token(b) ? get_int(b) : (int)b;
     
     // Проверяем, что после извлечения первого элемента стек не пустой
     if (stack_empty(machine->stack)) {
@@ -295,9 +404,16 @@ void handle_ixor(JavaMachine* machine) {
     }
     
     Data a = stack_get(machine->stack);
+    if (is_return_token(a)) {
+        stack_push(machine->stack, make_int(ib));
+        printf("Error: ixor with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int ia = is_int_token(a) ? get_int(a) : (int)a;
      
-    Data result = a ^ b;
+    Data result = make_int(ia ^ ib);
+    if (!result) { printf("Error: cannot allocate int value\n"); return; }
     stack_push(machine->stack, result);
     
     
@@ -314,8 +430,7 @@ void handle_iload_0(JavaMachine* machine) {
     }
     
     // Загружаем значение переменной 0 в стек
-    Data value = (Data)machine->vars[0];
-    stack_push(machine->stack, value);
+    stack_push(machine->stack, make_int(machine->vars[0]));
     
     machine->function_calls++;
     
@@ -328,8 +443,7 @@ void handle_iload_1(JavaMachine* machine) {
     }
     
     // Загружаем значение переменной 1 в стек
-    Data value = (Data)machine->vars[1];
-    stack_push(machine->stack, value);
+    stack_push(machine->stack, make_int(machine->vars[1]));
     
     machine->function_calls++;
     
@@ -342,8 +456,7 @@ void handle_iload_2(JavaMachine* machine) {
     }
     
     // Загружаем значение переменной 2 в стек
-    Data value = (Data)machine->vars[2];
-    stack_push(machine->stack, value);
+    stack_push(machine->stack, make_int(machine->vars[2]));
     
     machine->function_calls++;
     
@@ -356,8 +469,7 @@ void handle_iload_3(JavaMachine* machine) {
     }
     
     // Загружаем значение переменной 3 в стек
-    Data value = (Data)machine->vars[3];
-    stack_push(machine->stack, value);
+    stack_push(machine->stack, make_int(machine->vars[3]));
     
     machine->function_calls++;
     
@@ -377,10 +489,15 @@ void handle_istore_0(JavaMachine* machine) {
     
     // Извлекаем значение с верха стека
     Data value = stack_get(machine->stack);
+    if (is_return_token(value)) {
+        printf("Error: istore_0 with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int iv = is_int_token(value) ? get_int(value) : (int)value;
     
     // Сохраняем в переменную 0
-    machine->vars[0] = (int)value;
+    machine->vars[0] = iv;
     
     machine->function_calls++;
     
@@ -400,10 +517,15 @@ void handle_istore_1(JavaMachine* machine) {
     
     // Извлекаем значение с верха стека
     Data value = stack_get(machine->stack);
+    if (is_return_token(value)) {
+        printf("Error: istore_1 with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int iv = is_int_token(value) ? get_int(value) : (int)value;
     
     // Сохраняем в переменную 1
-    machine->vars[1] = (int)value;
+    machine->vars[1] = iv;
     
     machine->function_calls++;
     
@@ -422,10 +544,15 @@ void handle_istore_2(JavaMachine* machine) {
     
     // Извлекаем значение с верха стека
     Data value = stack_get(machine->stack);
+    if (is_return_token(value)) {
+        printf("Error: istore_2 with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int iv = is_int_token(value) ? get_int(value) : (int)value;
     
     // Сохраняем в переменную 2
-    machine->vars[2] = (int)value;
+    machine->vars[2] = iv;
     
     machine->function_calls++;
     
@@ -444,10 +571,15 @@ void handle_istore_3(JavaMachine* machine) {
     
     // Извлекаем значение с верха стека
     Data value = stack_get(machine->stack);
+    if (is_return_token(value)) {
+        printf("Error: istore_3 with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    int iv = is_int_token(value) ? get_int(value) : (int)value;
     
     // Сохраняем в переменную 3
-    machine->vars[3] = (int)value;
+    machine->vars[3] = iv;
     
     machine->function_calls++;
     
@@ -467,7 +599,12 @@ void handle_swap(JavaMachine* machine) {
     }
     
     Data b = stack_get(machine->stack);
+    if (is_return_token(b)) {
+        printf("Error: swap with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
+    Data saved_b = b; // b будет возвращен/освобождён позже
     
     // Проверяем, что после извлечения первого элемента стек не пустой
     if (stack_empty(machine->stack)) {
@@ -478,10 +615,15 @@ void handle_swap(JavaMachine* machine) {
     }
     
     Data a = stack_get(machine->stack);
+    if (is_return_token(a)) {
+        stack_push(machine->stack, saved_b);
+        printf("Error: swap with return address\n");
+        return;
+    }
     stack_pop(machine->stack);
     
     // свапаем
-    stack_push(machine->stack, b);
+    stack_push(machine->stack, saved_b);
     stack_push(machine->stack, a);
     
     machine->function_calls++;
@@ -495,8 +637,10 @@ void handle_invokestatic(JavaMachine* machine, int address) {
         return; 
     }
     
-    // добавляем адрес возврата в отдельный стек для адресов возврата
-    stack_push(machine->return_stack, (Data)address);
+    // создаём токен адреса возврата на операндном стеке
+    Data ra = make_ret(address);
+    if (!ra) { printf("Error: cannot allocate return token\n"); return; }
+    stack_push(machine->stack, ra);
     
     machine->function_calls++;
 
@@ -510,20 +654,25 @@ void handle_return(JavaMachine* machine) {
         return;  
     }
     
-    // Проверяем, что стек адресов возврата не пустой
-    if (stack_empty(machine->return_stack)) {
-        printf("Error: return with empty return stack\n");
+    if (stack_empty(machine->stack)) {
+        printf("Error: return with empty stack\n");
         return;
     }
     
-    // Извлекаем адрес возврата из отдельного стека
-    Data return_address = stack_get(machine->return_stack);
-    stack_pop(machine->return_stack);
+    // Верх стека должен быть токеном адреса возврата
+    Data top = stack_get(machine->stack);
+    if (!is_return_token(top)) {
+        printf("Error: return with non-address value\n");
+        return;
+    }
+    int addr = get_ret(top);
+    stack_pop(machine->stack);
+    // не освобождаем здесь, оставляем сборку при завершении (упрощение)
 
     machine->function_calls++;
     
     // Выводим адрес возврата
-    printf("return %d\n", (int)return_address);
+    printf("return %d\n", addr);
 }
 
 
@@ -673,7 +822,13 @@ void print_results(JavaMachine* machine) {
         while (!stack_empty(temp_stack)) {
             Data value = stack_get(temp_stack);
             stack_pop(temp_stack);
-            printf("%d\n", (int)value);
+            if (is_int_token(value)) {
+                printf("%d\n", get_int(value));
+            } else {
+                // Для служебных токенов выводим ничего осмысленного;
+                // в корректных сценариях их к этому моменту быть не должно.
+                printf("0\n");
+            }
             // Возвращаем обратно в основной стек
             stack_push(machine->stack, value);
         }
